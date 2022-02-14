@@ -1,5 +1,7 @@
 # gowebview
 
+修改createWindow , 增加handle windows.Handle参数，可以将webview直接放到指定window上
+
 [![GoDoc](https://godoc.org/github.com/inkeliz/gowebview?status.svg)](https://godoc.org/github.com/inkeliz/gowebview)
 [![Go Report Card](https://goreportcard.com/badge/github.com/zserge/webview)](https://goreportcard.com/report/github.com/inkeliz/gowebview)
 

@@ -1,4 +1,4 @@
-module github.com/inkeliz/gowebview
+module github.com/itgowo/gowebview
 
 go 1.13
 

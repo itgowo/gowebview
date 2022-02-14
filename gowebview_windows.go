@@ -1,4 +1,5 @@
-//+build windows,amd64
+//go:build windows && amd64
+// +build windows,amd64
 
 package gowebview
 
@@ -8,9 +9,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"github.com/inkeliz/gowebview/internal/network"
-	"github.com/inkeliz/gowebview/internal/wincom"
 	"github.com/inkeliz/w32"
+	"github.com/itgowo/gowebview/internal/network"
+	"github.com/itgowo/gowebview/internal/wincom"
 	"golang.org/x/sys/windows"
 	"os"
 	"path/filepath"
@@ -82,14 +83,55 @@ func newWindow(config *Config) (wv WebView, err error) {
 	if err = w.create(); err != nil {
 		return nil, err
 	}
-
 	w.SetSize(w.config.WindowConfig.Size, HintNone)
 	w.SetURL(w.config.URL)
 	w.SetTitle(w.config.WindowConfig.Title)
 
 	return w, nil
 }
+func newWindow2(config *Config, handle windows.Handle) (wv WebView, err error) {
+	w := &webview{
+		config: config,
+		done:   make(chan bool, 1),
+		queue:  make(chan func(), 1<<16),
+	}
 
+	if err = extract(config.WindowConfig.Path); err != nil {
+		return nil, err
+	}
+
+	if config.TransportConfig.IgnoreNetworkIsolation && !network.IsAllowedPrivateConnections() {
+		if err := network.EnablePrivateConnections(); err != nil {
+			return nil, err
+		}
+	}
+
+	for _, s := range []string{"WEBVIEW2_BROWSER_EXECUTABLE_FOLDER", "WEBVIEW2_USER_DATA_FOLDER", "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "WEBVIEW2_RELEASE_CHANNEL_PREFERENCE"} {
+		os.Unsetenv(s)
+	}
+
+	w.setProxy(config.TransportConfig.Proxy)
+	w.setCerts(config.TransportConfig.CertificateAuthorities)
+
+	dll, err := windows.LoadDLL(filepath.Join(config.WindowConfig.Path, "WebView2Loader.dll"))
+	if err != nil {
+		return nil, err
+	}
+
+	w.dll, err = dll.FindProc("CreateCoreWebView2EnvironmentWithOptions")
+	if err != nil {
+		return nil, err
+	}
+
+	if err = w.create2(handle); err != nil {
+		return nil, err
+	}
+	w.SetSize(w.config.WindowConfig.Size, HintNone)
+	w.SetURL(w.config.URL)
+	w.SetTitle(w.config.WindowConfig.Title)
+
+	return w, nil
+}
 func (w *webview) setProxy(proxy *HTTPProxy) {
 	if proxy == nil || (proxy.IP == "" && proxy.Port == "") {
 		return
@@ -151,7 +193,39 @@ func (w *webview) create() error {
 
 	return <-cerr
 }
+func (w *webview) create2(handle windows.Handle) error {
+	cerr := make(chan error, 1<<2)
 
+	go func() {
+		runtime.LockOSThread()
+		w32.CoInitializeEx(w32.COINIT_APARTMENTTHREADED)
+
+		go func() {
+			<-w.done
+			cerr <- nil
+		}()
+
+		if err := w.createWindow2(handle); err != nil {
+			cerr <- err
+			return
+		}
+
+		watchlist.Store(w.view.window, w)
+		defer watchlist.Delete(w.view.window)
+
+		res, _, err := w.dll.Call(0, uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(w.config.WindowConfig.Path))), 0, w.environmentCompletedHandler())
+		if res != 0 {
+			cerr <- err
+			return
+		}
+
+		if err := w.loop(); err != nil {
+			return
+		}
+	}()
+
+	return <-cerr
+}
 func (w *webview) Run() {
 	<-w.done
 }
@@ -229,7 +303,9 @@ func (w *webview) updateSize(now bool) {
 		return
 	}
 
-	f := func() { syscall.Syscall(w.browser.controller.VTBL.PutBounds, 2, uintptr(unsafe.Pointer(w.browser.controller)), uintptr(unsafe.Pointer(w32.GetClientRect(w.view.window))), 0) }
+	f := func() {
+		syscall.Syscall(w.browser.controller.VTBL.PutBounds, 2, uintptr(unsafe.Pointer(w.browser.controller)), uintptr(unsafe.Pointer(w32.GetClientRect(w.view.window))), 0)
+	}
 	if now {
 		f()
 		return
@@ -301,6 +377,49 @@ func watch(hwnd w32.HWND, msg uint32, wParam, lParam uintptr) uintptr {
 	return w32.DefWindowProc(hwnd, msg, wParam, lParam)
 }
 
+func (w *webview) createWindow2(handle windows.Handle) error {
+	w.view.instance = w32.GetModuleHandle("")
+	if w.view.instance == 0 {
+		return errors.New("GetModuleHandle fails")
+	}
+
+	w.view.cursor = w32.LoadCursorInt(w32.IDC_ARROW)
+	if w.view.cursor == 0 {
+		return errors.New("LoadCursorInt fails")
+	}
+
+	if path, err := os.Executable(); err == nil {
+		w.view.icon = w32.ExtractIcon(path, 0)
+	}
+
+	if _, ok := w32.GetClassInfoEx(w.view.instance, "webview"); !ok {
+		class := w32.RegisterClassEx(&w32.WNDCLASSEX{
+			Style:      w32.CS_HREDRAW | w32.CS_VREDRAW | w32.CS_OWNDC,
+			WndProc:    windows.NewCallback(watch),
+			Instance:   w.view.instance,
+			Cursor:     w.view.cursor,
+			Icon:       w.view.icon,
+			IconSm:     w.view.icon,
+			ClassName:  windows.StringToUTF16Ptr("webview"),
+			Background: w32.WHITE_BRUSH,
+		})
+		if class == 0 {
+			return errors.New("RegisterClassEx fails")
+		}
+	}
+
+	w.view.window = w32.HWND(handle)
+	if w.view.window == 0 {
+		return errors.New("CreateWindowEx failed")
+	}
+
+	w.SetVisibility(w.config.WindowConfig.Visibility)
+	w32.SetForegroundWindow(w.view.window)
+	w32.SetFocus(w.view.window)
+	w32.UpdateWindow(w.view.window)
+
+	return nil
+}
 func (w *webview) createWindow() error {
 	w.view.instance = w32.GetModuleHandle("")
 	if w.view.instance == 0 {
@@ -355,7 +474,6 @@ func (w *webview) createWindow() error {
 
 	return nil
 }
-
 func (w *webview) controllerCompletedHandler() uintptr {
 	h := &wincom.ICoreWebView2CreateCoreWebView2ControllerCompletedHandler{
 		VTBL: &wincom.ICoreWebView2CreateCoreWebView2ControllerCompletedHandlerVTBL{
