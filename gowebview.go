@@ -2,6 +2,7 @@ package gowebview
 
 import (
 	"crypto/x509"
+	"golang.org/x/sys/windows"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,6 +89,38 @@ func New(config *Config) (WebView, error) {
 	return newWindow(config)
 }
 
+func New2(config *Config, handle windows.Handle) (WebView, error) {
+	if config == nil {
+		config = new(Config)
+	}
+
+	if config.WindowConfig == nil {
+		config.WindowConfig = &WindowConfig{}
+	}
+
+	if config.TransportConfig == nil {
+		config.TransportConfig = &TransportConfig{}
+	}
+
+	if config.WindowConfig.Title == "" {
+		dir, err := os.Executable()
+		if err != nil {
+			dir = "gowebview"
+		}
+		filename := filepath.Base(filepath.Clean(dir))
+		config.WindowConfig.Title = strings.Title(strings.TrimSuffix(filename, filepath.Ext(filename)))
+	}
+
+	if config.WindowConfig.Size == nil {
+		config.WindowConfig.Size = &Point{X: 600, Y: 600}
+	}
+
+	if config.WindowConfig.Path == "" {
+		config.WindowConfig.Path = filepath.Join(os.TempDir(), config.WindowConfig.Title)
+	}
+
+	return newWindow2(config, handle)
+}
 
 // Config are used to set the initial and default values to the WebView.
 type Config struct {

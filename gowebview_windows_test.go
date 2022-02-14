@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"github.com/inkeliz/gowebview/internal/network"
+	"github.com/itgowo/gowebview/internal/network"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -23,7 +23,7 @@ func TestNew(t *testing.T) {
 
 	w, err := New(&Config{
 		WindowConfig: &WindowConfig{
-			Path:   path,
+			Path: path,
 		},
 		TransportConfig: &TransportConfig{
 			Proxy: &HTTPProxy{
@@ -90,7 +90,7 @@ func TestNewConfig(t *testing.T) {
 	path := filepath.Join(os.TempDir(), hex.EncodeToString(b))
 
 	w, err := New(&Config{
-		WindowConfig: &WindowConfig{ Size: &Point{X: 800, Y: 800}, Path: path, Visibility: VisibilityMinimized},
+		WindowConfig: &WindowConfig{Size: &Point{X: 800, Y: 800}, Path: path, Visibility: VisibilityMinimized},
 	})
 
 	if err != nil {
